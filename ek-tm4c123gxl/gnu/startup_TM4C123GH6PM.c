@@ -1,14 +1,12 @@
-/* File: startup_TM4C123GH6PM.c for GNU-ARM
+/* File: startup_TM4C123GH6PM.c
  * Purpose: startup file for TM4C123GH6PM Cortex-M4 device.
  *          Should be used with GCC 'GNU Tools ARM Embedded'
  * Version: CMSIS 5.0.1
  * Date: 2017-09-13
  *
  * Modified by Quantum Leaps:
- * - Added relocating of the Vector Table to free up the 256B region at 0x0
- *   for NULL-pointer protection by the MPU.
- * - Modified all exception handlers to branch to assert_failed()
- *   instead of locking up the CPU inside an endless loop.
+ * Added relocating of the Vector Table to free up the 256B region at 0x0
+ * for NULL-pointer protection by the MPU.
  *
  * Created from the CMSIS template for the specified device
  * Quantum Leaps, www.state-machine.com
@@ -20,6 +18,32 @@
  * assembly to re-set the stack pointer, in case it is corrupted by the
  * time assert_failed is called.
  */
+/* Copyright (c) 2011 - 2014 ARM LIMITED
+
+   All rights reserved.
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+   - Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+   - Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+   - Neither the name of ARM nor the names of its contributors may be used
+     to endorse or promote products derived from this software without
+     specific prior written permission.
+   *
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+   ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDERS AND CONTRIBUTORS BE
+   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+   POSSIBILITY OF SUCH DAMAGE.
+ ---------------------------------------------------------------------------*/
 
 /* start and end of stack defined in the linker script ---------------------*/
 /*extern int __stack_start__;*/
@@ -41,6 +65,9 @@ void assert_failed(char const *module, int loc);
 void Default_Handler(void);  /* Default empty handler */
 void Reset_Handler(void);    /* Reset Handler */
 void SystemInit(void);       /* CMSIS system initialization */
+
+__attribute__((noreturn)) void Q_onAssert(char const *module,
+                                          int loc); /* QP assertion handler */
 
 /*----------------------------------------------------------------------------
 * weak aliases for each Exception handler to the Default_Handler.
@@ -361,11 +388,11 @@ __attribute__((naked)) void Reset_Handler(void);
 void Reset_Handler(void) {
     extern int main(void);
     extern int __libc_init_array(void);
-    extern unsigned __data_start;  /* start of .data in the linker script */
-    extern unsigned __data_end__;  /* end of .data in the linker script */
-    extern unsigned const __data_load; /* initialization values for .data  */
-    extern unsigned __bss_start__; /* start of .bss in the linker script */
-    extern unsigned __bss_end__;   /* end of .bss in the linker script */
+    extern unsigned __data_start__; /* start of .data in the linker script */
+    extern unsigned __data_end__;   /* end of .data in the linker script */
+    extern unsigned const __data_lma__; /* initialization values for .data  */
+    extern unsigned __bss_start__;      /* start of .bss in the linker script */
+    extern unsigned __bss_end__;        /* end of .bss in the linker script */
     extern void software_init_hook(void) __attribute__((weak));
 
     /* relocate the Vector Table to leave room for the NULL-pointer region
@@ -376,72 +403,111 @@ void Reset_Handler(void) {
     SystemInit(); /* CMSIS system initialization */
 
     /* copy the data segment initializers from flash to RAM... */
-    unsigned const *src = &__data_load;
+    unsigned const *src = &__data_lma__;
     unsigned *dst;
-    for (dst = &__data_start; dst < &__data_end__; ++dst, ++src) {
+    for (dst = &__data_start__; dst < &__data_end__; ++dst, ++src) {
         *dst = *src;
     }
 
     /* zero fill the .bss segment in RAM... */
-    for (dst = &__bss_start__; dst < &__bss_end__; ++dst) {
+    for (dst = &__bss_start__; dst < &__bss_end__; ++dst)
+    {
         *dst = 0;
     }
 
     /* init hook provided? */
-    if (&software_init_hook != (void (*)(void))(0)) {
+    if (&software_init_hook != (void (*)(void))(0))
+    {
         /* give control to the RTOS */
         software_init_hook(); /* this will also call __libc_init_array */
     }
-    else {
+    else
+    {
         /* call all static constructors in C++ (harmless in C programs) */
         __libc_init_array();
         (void)main(); /* application's entry point; should never return! */
     }
 
     /* the previous code should not return, but assert just in case... */
-    __asm volatile ("  CPSID i");
-    assert_failed("Reset_Handler", 1U);
+    assert_failed("Reset_Handler", __LINE__);
 }
 
 /* fault exception handlers ------------------------------------------------*/
 __attribute__((naked)) void NMI_Handler(void);
-void NMI_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("NMI", 1U);
-}
-/*..........................................................................*/
-__attribute__((naked)) void HardFault_Handler(void);
-void HardFault_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("HardFault", 1U);
+void NMI_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_nmi       \n"
+                   "    mov  r1,#1             \n"
+                   "    b assert_failed        \n"
+                   "str_nmi: .asciz \"NMI\"    \n"
+                   "  .align 2                 \n");
 }
 /*..........................................................................*/
 __attribute__((naked)) void MemManage_Handler(void);
-void MemManage_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("MemManage", 1U);
+void MemManage_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_mem       \n"
+                   "    mov  r1,#1             \n"
+                   "    b    assert_failed     \n"
+                   "str_mem: .asciz \"MemManage\"\n"
+                   "  .align 2                 \n");
+}
+/*..........................................................................*/
+__attribute__((naked)) void HardFault_Handler(void);
+void HardFault_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_hrd       \n"
+                   "    mov  r1,#1             \n"
+                   "    b    assert_failed     \n"
+                   "str_hrd: .asciz \"HardFault\"\n"
+                   "  .align 2                 \n");
 }
 /*..........................................................................*/
 __attribute__((naked)) void BusFault_Handler(void);
-void BusFault_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("BusFault", 1U);
+void BusFault_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_bus       \n"
+                   "    mov  r1,#1             \n"
+                   "    b    assert_failed     \n"
+                   "str_bus: .asciz \"BusFault\"\n"
+                   "  .align 2                 \n");
 }
 /*..........................................................................*/
 __attribute__((naked)) void UsageFault_Handler(void);
-void UsageFault_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("UsageFault", 1U);
+void UsageFault_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_usage     \n"
+                   "    mov  r1,#1             \n"
+                   "    b    assert_failed     \n"
+                   "str_usage: .asciz \"UsageFault\"\n"
+                   "  .align 2                 \n");
 }
 /*..........................................................................*/
 __attribute__((naked)) void Default_Handler(void);
-void Default_Handler(void) {
-    /* disable interrupts and reset SP in case of stack overflow */
-    __asm volatile ("  CPSID i\n  MOV   sp,%0" : : "r" (&__stack_end__));
-    assert_failed("Default", 1U);
+void Default_Handler(void)
+{
+    __asm volatile("    ldr  r0,=str_dflt      \n"
+                   "    mov  r1,#1             \n"
+                   "    b    assert_failed     \n"
+                   "str_dflt: .asciz \"Default\"\n"
+                   "  .align 2                 \n");
+}
+
+/*--------------------------------------------------------------------------*/
+/* The function assert_failed() provides a low-level handler for assertion
+ * failures. It ultimately transfers control to Q_onAssert(), which defines
+ * the error/assertion handling policy for the application.
+ *
+ * assert_failed() re-sets the stack pointer (MSP) to the original setting.
+ * This is necessary to avoid cascading exceptions in case the stack was
+ * OVERFLOWN.
+ */
+__attribute__((naked, noreturn)) void assert_failed(char const *module, int loc)
+{
+    /* re-set the SP in case of stack overflow */
+    __asm volatile("  MOV  sp,%0" : : "r"(&__stack_end__));
+    Q_onAssert(module, loc); /* call the application-specific QP handler */
+    for (;;)
+    { /* should not be reached, but just in case loop forever... */
+    }
 }
