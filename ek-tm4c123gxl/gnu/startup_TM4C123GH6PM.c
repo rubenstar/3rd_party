@@ -66,7 +66,7 @@ void Default_Handler(void);  /* Default empty handler */
 void Reset_Handler(void);    /* Reset Handler */
 void SystemInit(void);       /* CMSIS system initialization */
 
-__attribute__((noreturn)) void Q_onAssert(char const *module,
+__attribute__((noreturn)) void Q_onError(char const *module,
                                           int loc); /* QP assertion handler */
 
 /*----------------------------------------------------------------------------
@@ -506,7 +506,7 @@ __attribute__((naked, noreturn)) void assert_failed(char const *module, int loc)
 {
     /* re-set the SP in case of stack overflow */
     __asm volatile("  MOV  sp,%0" : : "r"(&__stack_end__));
-    Q_onAssert(module, loc); /* call the application-specific QP handler */
+    Q_onError(module, loc); /* call the application-specific QP handler */
     for (;;)
     { /* should not be reached, but just in case loop forever... */
     }
